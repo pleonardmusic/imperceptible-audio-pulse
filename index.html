@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERB Comb 40Hz Processor — FFT</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="eyebrow">Sound for Aging — Research Tool v3 (FFT)</div>
+    <h1>ERB Comb<br><em>40Hz Processor</em></h1>
+    <p class="subtitle">
+      Two complementary ERB comb tracks, built with fast FFT frequency-domain masking.
+      Track A has odd bands at full volume and even bands attenuated; Track B is the inverse.
+      Each track is amplitude-modulated at 40Hz — so A and B alone already contain the entrainment envelope,
+      and A + B reconstructs the full stimulus. Stereo in, stereo out.
+    </p>
+  </header>
+
+  <!-- Upload -->
+  <div class="card">
+    <div class="card-label">01 — Audio Source</div>
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="audioFile" accept="audio/*">
+      <div class="dropzone-icon">◎</div>
+      <div class="dropzone-text"><strong>Click or drag</strong> an audio file here<br>MP3, WAV, FLAC, M4A supported</div>
+    </div>
+    <div class="file-name" id="fileName"></div>
+    <div class="waveform-container" id="waveformContainer">
+      <canvas id="waveformCanvas"></canvas>
+    </div>
+  </div>
+
+  <!-- Pre-processing -->
+  <div class="card">
+    <div class="card-label">02 — Pre-Processing</div>
+
+    <div class="param-row">
+      <div class="param-label">Compression<span>0 = bypass, 1 = fully flatten dynamics</span></div>
+      <input type="range" id="compression" min="0" max="1" step="0.05" value="0.2">
+      <div class="param-value" id="compressionVal">0.20</div>
+    </div>
+
+    <p class="info">
+      Flattens loudness variations so the 40Hz modulation sits on a more uniform carrier.
+      Low values (0.1–0.3) gently even out dynamics and work for most music.
+      Turn up (0.6–1.0) for highly rhythmic tracks where drum hits or silences would otherwise mask the entrainment envelope.
+      At 1.0 expect pumping/breathing artifacts — fine for research stimulus, not for casual listening.
+    </p>
+  </div>
+
+  <!-- ERB Parameters -->
+  <div class="card">
+    <div class="card-label">03 — ERB Comb Parameters</div>
+
+    <div class="param-row">
+      <div class="param-label">ERB Bands<span>Total bands — split into A/B combs</span></div>
+      <input type="range" id="numBands" min="8" max="48" step="2" value="24">
+      <div class="param-value" id="numBandsVal">24</div>
+    </div>
+
+    <div class="param-row">
+      <div class="param-label">Min Frequency<span>Hz</span></div>
+      <input type="range" id="freqMin" min="20" max="500" step="10" value="80">
+      <div class="param-value" id="freqMinVal">80 Hz</div>
+    </div>
+
+    <div class="param-row">
+      <div class="param-label">Max Frequency<span>Hz</span></div>
+      <input type="range" id="freqMax" min="4000" max="20000" step="500" value="16000">
+      <div class="param-value" id="freqMaxVal">16000 Hz</div>
+    </div>
+
+    <div class="param-row">
+      <div class="param-label">Off-band Level<span>0 = silent, 1 = no effect</span></div>
+      <input type="range" id="offLevel" min="0.0" max="0.9" step="0.05" value="0.1">
+      <div class="param-value" id="offLevelVal">0.10</div>
+    </div>
+
+    <div class="param-row">
+      <div class="param-label">Band Edge Softness<span>0 = hard cut, higher = smoother transition between bands</span></div>
+      <input type="range" id="edgeSoft" min="0" max="32" step="1" value="4">
+      <div class="param-value" id="edgeSoftVal">4</div>
+    </div>
+
+    <p class="info">
+      Off-band level is your efficacy/comfort tradeoff. Lower = stronger perceivable stimulus.
+      0.0–0.2 recommended for effectiveness. Above 0.5 may be imperceptible.
+      <br><br>
+      Band edge softness controls how sharply neighboring bands separate in frequency.
+      0 = abrupt cut between bands (sharpest, most aggressive filtering).
+      Higher values taper the transition over more FFT bins (smoother, less artifacty, slightly blurs the comb).
+      4–8 is usually a good range for music.
+    </p>
+
+    <div class="comb-viz">
+      <div class="comb-track">
+        <div class="comb-track-label a">Track A — Comb</div>
+        <canvas id="combCanvasA"></canvas>
+      </div>
+      <div class="comb-track">
+        <div class="comb-track-label b">Track B — Inverse Comb</div>
+        <canvas id="combCanvasB"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modulation Parameters -->
+  <div class="card">
+    <div class="card-label">04 — Modulation Parameters</div>
+
+    <div class="param-row">
+      <div class="param-label">Mod Frequency<span>Hz — entrainment target (integer)</span></div>
+      <input type="range" id="modFreq" min="1" max="50" step="1" value="40">
+      <div class="param-value" id="modFreqVal">40 Hz</div>
+    </div>
+
+    <div class="param-row">
+      <div class="param-label">Crossfade Shape<span>0 = square, 1 = full Hanning</span></div>
+      <input type="range" id="xfadeShape" min="0" max="1" step="0.05" value="1.0">
+      <div class="param-value" id="xfadeShapeVal">1.00</div>
+    </div>
+
+    <p class="info">
+      The same shape is applied to the AM envelopes of Track A and Track B individually,
+      so their sum always reconstructs the full signal regardless of shape.
+      Hanning = smooth sinusoidal AM. Square = hard on/off switching (stronger stimulus, harsher).
+      0.7–1.0 works best for music.
+    </p>
+  </div>
+
+  <!-- Process -->
+  <div class="card">
+    <div class="card-label">05 — Process & Listen</div>
+
+    <div class="btn-row">
+      <button class="btn-primary" id="processBtn" disabled>Process Audio</button>
+    </div>
+
+    <div class="progress-container" id="progressContainer">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-label" id="progressLabel">Initializing...</div>
+    </div>
+
+    <div class="log" id="log"></div>
+
+    <div class="results" id="results">
+      <div class="result-stat">
+        <span class="result-stat-label">Duration</span>
+        <span class="result-stat-value" id="statDuration">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">Sample Rate</span>
+        <span class="result-stat-value" id="statSampleRate">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">Channels</span>
+        <span class="result-stat-value" id="statChannels">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">Compression</span>
+        <span class="result-stat-value" id="statCompression">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">ERB Bands</span>
+        <span class="result-stat-value" id="statBands">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">Off-band Level</span>
+        <span class="result-stat-value" id="statOffLevel">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">Edge Softness</span>
+        <span class="result-stat-value" id="statEdge">—</span>
+      </div>
+      <div class="result-stat">
+        <span class="result-stat-label">Mod / Shape</span>
+        <span class="result-stat-value" id="statMod">—</span>
+      </div>
+    </div>
+
+    <div class="players" id="players">
+      <div class="player-block">
+        <div class="player-header">
+          <span class="player-label mix">Mixed (A + B)</span>
+          <a class="player-dl" id="dlMix" download="erb_comb_40hz_mixed.wav">Download WAV</a>
+        </div>
+        <audio id="audioMix" controls preload="metadata"></audio>
+      </div>
+      <div class="player-block a">
+        <div class="player-header">
+          <span class="player-label a">Track A (AM-modulated)</span>
+          <a class="player-dl" id="dlA" download="erb_comb_40hz_trackA.wav">Download WAV</a>
+        </div>
+        <audio id="audioA" controls preload="metadata"></audio>
+      </div>
+      <div class="player-block b">
+        <div class="player-header">
+          <span class="player-label b">Track B (AM-modulated)</span>
+          <a class="player-dl" id="dlB" download="erb_comb_40hz_trackB.wav">Download WAV</a>
+        </div>
+        <audio id="audioB" controls preload="metadata"></audio>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
