@@ -58,20 +58,20 @@
 
     <div class="param-row">
       <div class="param-label">ERB Bands<span>Total bands — split into A/B combs</span></div>
-      <input type="range" id="numBands" min="8" max="48" step="2" value="24">
-      <div class="param-value" id="numBandsVal">24</div>
+      <input type="range" id="numBands" min="8" max="48" step="2" value="12">
+      <div class="param-value" id="numBandsVal">12</div>
     </div>
 
     <div class="param-row">
-      <div class="param-label">Min Frequency<span>Hz</span></div>
-      <input type="range" id="freqMin" min="20" max="500" step="10" value="80">
-      <div class="param-value" id="freqMinVal">80 Hz</div>
+      <div class="param-label">Min Pulse Frequency<span>Hz — bands below this are excluded from the comb/40Hz pulse and always passed through unmodified</span></div>
+      <input type="range" id="freqMin" min="20" max="500" step="10" value="500">
+      <div class="param-value" id="freqMinVal">500 Hz</div>
     </div>
 
     <div class="param-row">
-      <div class="param-label">Max Frequency<span>Hz</span></div>
-      <input type="range" id="freqMax" min="4000" max="20000" step="500" value="16000">
-      <div class="param-value" id="freqMaxVal">16000 Hz</div>
+      <div class="param-label">Max Pulse Frequency<span>Hz — bands above this are excluded from the comb/40Hz pulse and always passed through unmodified</span></div>
+      <input type="range" id="freqMax" min="4000" max="20000" step="500" value="5000">
+      <div class="param-value" id="freqMaxVal">5000 Hz</div>
     </div>
 
     <div class="param-row">
@@ -81,19 +81,33 @@
     </div>
 
     <div class="param-row">
-      <div class="param-label">Band Edge Softness<span>0 = hard cut, higher = smoother transition between bands</span></div>
-      <input type="range" id="edgeSoft" min="0" max="32" step="1" value="4">
-      <div class="param-value" id="edgeSoftVal">4</div>
+      <div class="param-label">Band Edge Softness<span>0 = hard cut, higher = smoother transition — % of each band's own ERB width, so it scales correctly across the spectrum instead of disproportionately blurring bass bands</span></div>
+      <input type="range" id="edgeSoft" min="0" max="50" step="1" value="15">
+      <div class="param-value" id="edgeSoftVal">15%</div>
     </div>
 
     <p class="info">
       Off-band level is your efficacy/comfort tradeoff. Lower = stronger perceivable stimulus.
       0.0–0.2 recommended for effectiveness. Above 0.5 may be imperceptible.
       <br><br>
-      Band edge softness controls how sharply neighboring bands separate in frequency.
-      0 = abrupt cut between bands (sharpest, most aggressive filtering).
-      Higher values taper the transition over more FFT bins (smoother, less artifacty, slightly blurs the comb).
-      4–8 is usually a good range for music.
+      Band edge softness controls how sharply neighboring bands separate in frequency, as a
+      % of each band's own ERB width (not a flat Hz amount — a flat amount would disproportionately
+      blur the narrow bass bands while barely touching the wide treble bands). 0 = abrupt cut.
+      Higher values taper the transition more, blurring the comb's on/off contrast. Current
+      default (15%) keeps the on/off contrast relatively crisp while still softening the hardest
+      edges of the comb transitions.
+      <br><br>
+      <strong>Min/Max Pulse Frequency tradeoff (2026-06-24 finding):</strong> raising Min Pulse
+      Frequency away from full-range (originally 80Hz, now defaulted to 500Hz) makes the audio
+      sound dramatically more normal — but it is NOT a free win neurally. The 40Hz auditory
+      steady-state response (ASSR) literature shows response amplitude is largest for low carrier
+      frequencies and decreases as carrier frequency rises (a 250Hz carrier gives ~3x the ASSR
+      amplitude of a 4000Hz carrier). So excluding bass from the pulse likely trades away some
+      real entrainment strength for a cleaner sound, not a pure improvement. There's no known
+      setting that wins on both axes. Above ~5000Hz (Max Pulse Frequency), this tradeoff mostly
+      disappears — there's no evidence
+      entrainment depends on content that high, so excluding treble is closer to a free win.
+      Full citations at the bottom of this page.
     </p>
 
     <div class="comb-viz">
@@ -119,7 +133,7 @@
     </div>
 
     <div class="param-row">
-      <div class="param-label">Crossfade Shape<span>0 = square, 1 = full Hanning</span></div>
+      <div class="param-label">Crossfade Shape<span>0 = square, 1 = full Hanning — THE main control for gritty/static artifacts, see below</span></div>
       <input type="range" id="xfadeShape" min="0" max="1" step="0.05" value="1.0">
       <div class="param-value" id="xfadeShapeVal">1.00</div>
     </div>
@@ -127,8 +141,14 @@
     <p class="info">
       The same shape is applied to the AM envelopes of Track A and Track B individually,
       so their sum always reconstructs the full signal regardless of shape.
-      Hanning = smooth sinusoidal AM. Square = hard on/off switching (stronger stimulus, harsher).
-      0.7–1.0 works best for music.
+      Hanning (1) = smooth sinusoidal AM, no discontinuity. Square (0) = hard on/off switching
+      every 1/40s — a sharp discontinuity that injects broadband harmonic energy on every cycle.
+      <br><br>
+      <strong>This is THE dominant cause of gritty/clicky/static-sounding output (2026-06-24
+      finding) — much more so than band edge softness or band count, which were investigated
+      first and turned out to be minor by comparison.</strong> Listening-test result: gritty
+      below ~50%, "bearable" around 50%, clean at 1.0. Keep this at or near 1.0 (the default) —
+      there is little reason to lower it.
     </p>
   </div>
 
@@ -205,6 +225,22 @@
         <audio id="audioB" controls preload="metadata"></audio>
       </div>
     </div>
+  </div>
+
+  <div class="info" style="margin-top:32px; padding-top:16px; border-top:1px solid #2a2a3a; font-size:11px; line-height:1.7;">
+    <strong>References</strong><br>
+    Background and full design-decision log: <code>PROJECT_NOTES.md</code> in this project folder.<br><br>
+    <strong>40Hz gamma entrainment (the reason this app exists):</strong><br>
+    Iaccarino et al. 2016, <em>Nature</em> — 40Hz light flicker reduces amyloid-β via microglia in AD mouse models; effect is frequency-specific (20/80Hz/random did not work).<br>
+    Martorell et al. 2019, <em>Cell</em>, "Multisensory Gamma Stimulation Ameliorates Alzheimer's-Associated Pathology" — combined 40Hz light+sound (not light or sound alone) reduced Aβ and improved cognition in mice. Auditory stimulus was 1ms clicks, 25ms intervals (i.e. 40Hz).<br>
+    Jones et al. 2019, <em>J. Alzheimer's Dis.</em> (Galway/NUI) — 40Hz light flicker produces the strongest human EEG entrainment vs 60/80Hz; eyes-open >> eyes-closed.<br>
+    Hajos et al. 2024, <em>Frontiers in Neurology</em>, OVERTURE trial (Cognito Therapeutics) — N=76 AD patients, 6mo 40Hz light+sound: missed primary composite endpoint, but significant secondary signals (MMSE, ADCS-ADL, brain volume preservation); no amyloid-PET change.<br><br>
+    <strong>Masking the stimulus (the actual idea this app implements):</strong><br>
+    Carstensen et al. 2020, SPIE, "Invisible Spectral Flicker" (OptoCeutics/DTU) — alternates two chromaticity/luminance-matched LED spectra at 40Hz so the eye perceives constant light while the spectral composition still switches; this app is the audio analog (ERB comb instead of LED spectra).<br><br>
+    <strong>Auditory steady-state response (carrier-frequency choice for Min/Max Pulse Frequency):</strong><br>
+    Frequency specificity of 40-Hz auditory steady-state responses — ASSR reliably measured for AM-tone carriers 250Hz-4000Hz; amplitude decreases as carrier frequency increases (250Hz ASSR ~3x larger than at 4000Hz). Used here to judge whether excluding bass (raising Min Pulse Frequency) trades away neural-entrainment strength, not just audible artifact.<br><br>
+    <strong>ERB perceptual frequency scale:</strong><br>
+    Glasberg & Moore 1990, "Derivation of auditory filter shapes from notched-noise data" — basis for <code>hzToErb</code>/<code>erbToHz</code> in <code>app.js</code>.
   </div>
 
 </div>

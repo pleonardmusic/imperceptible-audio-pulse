@@ -1,4 +1,29 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// "Sound for Aging" / ERB Comb project — audio analog of Optoceutics' Invisible
+// Spectral Flicker (light), built to mask a 40Hz gamma-entrainment pulse inside
+// music so it can be listened to all day instead of via a punishing 1hr/day
+// overt-click session. Background: 40Hz gamma entrainment (GENUS) literature —
+// Iaccarino 2016, Martorell 2019 (mouse, light+sound, amyloid/tau reduction via
+// microglia), Jones 2019/Galway (human EEG entrainment, light only), Cognito
+// Therapeutics OVERTURE trial 2024 (human AD patients, mixed results — missed
+// primary endpoint, but positive secondary/imaging signals). See references
+// at the bottom of index.html and PROJECT_NOTES.md in this folder for full
+// citations and a running log of findings/design decisions.
+//
+// Pipeline, per channel: compressDynamics (optional dynamics flattening) ->
+// single whole-track FFT -> buildMask x2 (complementary ERB combs A/B) ->
+// IFFT x2 -> applyAM (40Hz crossfade between A and B) -> encodeWAV.
+// This is a single-shot FFT over the ENTIRE file, not block-based STFT — so
+// every band's gating is one static mask applied uniformly across the whole
+// track's duration, not something that adapts moment-to-moment.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── ERB Utilities ────────────────────────────────────────────────────────────
+// ERB (Equivalent Rectangular Bandwidth, Glasberg & Moore 1990) spaces bands so
+// each one is perceptually equal-width, unlike linear Hz spacing. This matters
+// here because the comb's "on"/"off" bands need to alternate in a way that
+// sounds like one continuous texture rather than an audibly uneven set of
+// gaps — ERB spacing is what makes that plausible.
 function hzToErb(hz) { return 21.4 * Math.log10(0.00437 * hz + 1); }
 function erbToHz(erb) { return (Math.pow(10, erb / 21.4) - 1) / 0.00437; }
 
@@ -10,6 +35,10 @@ function getErbEdges(n, fMin, fMax) {
 }
 
 // ─── Envelope compression (pre-process) ──────────────────────────────────────
+// Peter's usage note (2026-06-24): not using this much in practice — default
+// 0.2 is fairly light. Was added to keep the source music's natural loudness
+// swings (drum hits, quiet passages) from masking/fighting the 40Hz
+// entrainment envelope applied later, but isn't critical at moderate settings.
 // One-pole LPF on |signal| gives a slow amplitude envelope; divide signal by
 // envelope^amount. amount=0 → bypass; amount=1 → fully flattened. Floor keeps
 // silent passages from exploding. Smoothing ~100ms, safely slower than 40Hz
@@ -112,13 +141,28 @@ function bandWeight(k, low, high, w) {
   return 0.5 * (1 + Math.cos(Math.PI * x));
 }
 
-function buildMask(N, sr, edges, isA, off, edgeSoft) {
+// `off` (UI: "Off-band Level") is the core efficacy/comfort tradeoff of the
+// whole technique — the level (0-1) that "off" bands are attenuated to,
+// rather than fully silenced. 0 = maximum comb contrast (most perceptible,
+// most effective in principle); closer to 1 = bands barely alternate (least
+// perceptible, weakest masking of the underlying entrainment signal). This is
+// the audio analog of Optoceutics never making either light source fully off
+// in their Invisible Spectral Flicker.
+function buildMask(N, sr, edges, isA, off, edgeSoftFraction) {
   const mask = new Float32Array(N);
   const nb = edges.length - 1;
   const nyq = N >> 1;
+  // edgeSoftFraction is a fraction of each band's OWN ERB width, not a flat Hz
+  // or bin count — ERB bands are narrow at low frequencies and wide at high
+  // frequencies by design, so a flat width disproportionately blurs/merges the
+  // low bands (where it's a large % of the band) while barely affecting the
+  // high bands (where it's a tiny %). Scaling per-band keeps softening
+  // perceptually consistent across the spectrum.
   for (let i = 0; i < nb; i++) {
     const low  = hzToBin(edges[i],     N, sr);
     const high = hzToBin(edges[i + 1], N, sr);
+    const bandWidthHz = edges[i + 1] - edges[i];
+    const edgeSoft = Math.max(0, Math.round(edgeSoftFraction * bandWidthHz / sr * N));
     const on = isA ? (i % 2 === 0) : (i % 2 === 1);
     const g = on ? 1.0 : off;
     const lo = Math.max(0, low - edgeSoft);
@@ -128,6 +172,29 @@ function buildMask(N, sr, edges, isA, off, edgeSoft) {
       mask[k] += w * g;
     }
   }
+  // Below the lowest band edge (Min Pulse Frequency) and above the highest
+  // (Max Pulse Frequency), always pass through unmodified: mask=1 in both A
+  // and B, so the AM crossfade cancels exactly since a+b=1 always — that
+  // content never toggles, full fidelity preserved outside the pulse range.
+  // Until 2026-06-24 this range was silently DELETED (mask stayed 0 from
+  // initialization) rather than preserved — a real bug, found by Peter
+  // noticing artifacts and confirmed by spectrogram. Always-preserve is now
+  // the only behavior; there's no toggle to bring the delete-bug back.
+  //
+  // Where to set Min/Max Pulse Frequency is a real tradeoff, not just a
+  // cosmetic choice — see 40Hz auditory steady-state response (ASSR)
+  // literature: ASSR amplitude is reliably measurable for AM carrier tones
+  // from 250Hz-4000Hz, but DECREASES as carrier frequency increases (250Hz
+  // carrier ASSR amplitude ~3x larger than at 4000Hz). So narrowing the pulse
+  // range upward (e.g. Min Pulse Frequency 80->500Hz, which Peter found
+  // sounds much cleaner) trades away some of this signal's theoretical
+  // neural-entrainment strength for less audible artifact — it does not
+  // improve entrainment, even though it sounds better. There is no known
+  // setting that is simply better on both axes. See PROJECT_NOTES.md.
+  const bottomBin = hzToBin(edges[0], N, sr);
+  for (let k = 0; k < bottomBin; k++) mask[k] = 1.0;
+  const topBin = hzToBin(edges[nb], N, sr);
+  for (let k = topBin; k <= nyq; k++) mask[k] = 1.0;
   // mirror to negative frequencies for real-signal conjugate symmetry
   for (let k = 1; k < nyq; k++) mask[N - k] = mask[k];
   return mask;
@@ -169,6 +236,21 @@ async function processChannelFFT(signal, sr, edges, off, edgeSoft, progressCb) {
 }
 
 // ─── AM envelopes (A and B sum to 1 at every sample, for any shape) ──────────
+// `shape` blends between a square wave (0: Track A and B swap with an
+// instantaneous on/off step, every 1/modFreq seconds) and a full Hanning/
+// raised-cosine crossfade (1: smooth sinusoidal transition, no discontinuity).
+//
+// FINDING (Peter, 2026-06-24): this parameter, not edge softness or band
+// count, was the dominant source of the "gritty/clicky" artifact. A square
+// wave has a sharp discontinuity at every transition; sharp discontinuities
+// inject broadband harmonic energy on every cycle (40 times/sec), which is
+// audible as grit/static independent of which musical content is being
+// toggled. A smooth Hanning crossfade has no discontinuity in its derivative,
+// so it doesn't generate that broadband splatter. Peter found: gritty below
+// ~50%, "bearable" around 50%, clean at 1.0 (full Hanning, the default).
+// Net effect: there is little reason to ever lower this below ~0.5, and the
+// previously-investigated edge-softness/passthrough fixes were real
+// correctness improvements but likely minor compared to this one.
 function envAatSample(i, period, shape) {
   const phase = (i / period) % 1.0;
   if (shape >= 1.0) return 0.5 * (1 + Math.cos(2 * Math.PI * phase));
@@ -317,7 +399,7 @@ function setupSliders() {
     { id: 'freqMin',    valId: 'freqMinVal',    fmt: v => v + ' Hz' },
     { id: 'freqMax',    valId: 'freqMaxVal',    fmt: v => v + ' Hz' },
     { id: 'offLevel',   valId: 'offLevelVal',   fmt: v => parseFloat(v).toFixed(2), viz: true },
-    { id: 'edgeSoft',   valId: 'edgeSoftVal',   fmt: v => v },
+    { id: 'edgeSoft',   valId: 'edgeSoftVal',   fmt: v => v + '%' },
     { id: 'modFreq',    valId: 'modFreqVal',    fmt: v => v + ' Hz' },
     { id: 'compression',valId: 'compressionVal',fmt: v => parseFloat(v).toFixed(2) },
     { id: 'xfadeShape', valId: 'xfadeShapeVal', fmt: v => parseFloat(v).toFixed(2) },
@@ -379,14 +461,14 @@ document.getElementById('processBtn').addEventListener('click', async () => {
   const fMin = parseInt(document.getElementById('freqMin').value);
   const fMax = parseInt(document.getElementById('freqMax').value);
   const offLevel = parseFloat(document.getElementById('offLevel').value);
-  const edgeSoft = parseInt(document.getElementById('edgeSoft').value);
+  const edgeSoft = parseInt(document.getElementById('edgeSoft').value) / 100; // % -> fraction of each band's own width
   const modFreq = parseInt(document.getElementById('modFreq').value);
   const xfadeShape = parseFloat(document.getElementById('xfadeShape').value);
   const compression = parseFloat(document.getElementById('compression').value);
 
   const edges = getErbEdges(numBands, fMin, fMax);
 
-  log(`FFT masking — ${numBands} bands, ${fMin}-${fMax}Hz, off=${offLevel}, softness=${edgeSoft}`, 'info');
+  log(`FFT masking — ${numBands} bands, ${fMin}-${fMax}Hz, off=${offLevel}, softness=${edgeSoft} (audio outside ${fMin}-${fMax}Hz always preserved unmodified)`, 'info');
   log(`Processing ${numCh} channel(s) @ ${sr}Hz, ${audioBuffer.length} samples`, 'info');
 
   const t0 = performance.now();
@@ -449,7 +531,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
   document.getElementById('statCompression').textContent = compression.toFixed(2);
   document.getElementById('statBands').textContent = numBands + ' (' + Math.ceil(numBands/2) + ' per comb)';
   document.getElementById('statOffLevel').textContent = offLevel.toFixed(2);
-  document.getElementById('statEdge').textContent = edgeSoft + ' bins';
+  document.getElementById('statEdge').textContent = (edgeSoft * 100).toFixed(0) + '%';
   document.getElementById('statMod').textContent = modFreq + 'Hz / ' + (xfadeShape >= 1 ? 'Hanning' : xfadeShape <= 0 ? 'Square' : 'Blend ' + xfadeShape.toFixed(2));
 
   document.getElementById('players').style.display = 'block';
